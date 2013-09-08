@@ -22,59 +22,28 @@ import org.jruby.util.IOInputStream;
 
 import static org.jruby.runtime.Visibility.PRIVATE;
 
-import org.msgpack.MessagePack;
-import org.msgpack.unpacker.MessagePackBufferUnpacker;
-import org.msgpack.unpacker.MessagePackUnpacker;
-import org.msgpack.unpacker.UnpackerIterator;
-import org.msgpack.type.Value;
-
 
 @JRubyClass(name="MessagePack::Unpacker")
 public class Unpacker extends RubyObject {
-  private MessagePack msgPack;
-  private RubyObjectUnpacker rubyObjectUnpacker;
-  private MessagePackBufferUnpacker bufferUnpacker;
-  private MessagePackUnpacker streamUnpacker;
-  private UnpackerIterator unpackerIterator;
   private IRubyObject stream;
   private IRubyObject data;
-  private RubyObjectUnpacker.CompiledOptions options;
   
-  public Unpacker(Ruby runtime, RubyClass type, MessagePack msgPack) {
+  public Unpacker(Ruby runtime, RubyClass type) {
     super(runtime, type);
-    this.msgPack = msgPack;
-    this.rubyObjectUnpacker = new RubyObjectUnpacker(msgPack);
-    this.bufferUnpacker = null;
-    this.streamUnpacker = null;
-    this.stream = null;
-    this.data = null;
   }
 
   static class UnpackerAllocator implements ObjectAllocator {
     private MessagePack msgPack;
       
-    public UnpackerAllocator(MessagePack msgPack) {
-      this.msgPack = msgPack;
-    }
-      
     public IRubyObject allocate(Ruby runtime, RubyClass klass) {
-      return new Unpacker(runtime, klass, msgPack);
+      return new Unpacker(runtime, klass);
     }
   }
 
-  @JRubyMethod(name = "initialize", optional = 2, visibility = PRIVATE)
+  @JRubyMethod(name = "initialize", optional = 1, visibility = PRIVATE)
   public IRubyObject initialize(ThreadContext ctx, IRubyObject[] args) {
-    if (args.length == 0) {
-      options = new RubyObjectUnpacker.CompiledOptions(ctx.getRuntime());
-    } else if (args.length == 1 && args[0] instanceof RubyHash) {
-      options = new RubyObjectUnpacker.CompiledOptions(ctx.getRuntime(), (RubyHash) args[0]);
-    } else if (args.length > 0) {
+    if (args.length == 1) {
       setStream(ctx, args[0]);
-      if (args.length > 2) {
-        options = new RubyObjectUnpacker.CompiledOptions(ctx.getRuntime(), (RubyHash) args[1]);
-      } else {
-        options = new RubyObjectUnpacker.CompiledOptions(ctx.getRuntime());
-      }
     }
     return this;
   }
