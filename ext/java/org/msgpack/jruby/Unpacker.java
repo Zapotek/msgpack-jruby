@@ -1,10 +1,6 @@
 package org.msgpack.jruby;
 
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.ByteArrayInputStream;
-
 import org.jruby.Ruby;
 import org.jruby.RubyClass;
 import org.jruby.RubyString;
@@ -19,6 +15,7 @@ import org.jruby.runtime.ThreadContext;
 import org.jruby.anno.JRubyClass;
 import org.jruby.anno.JRubyMethod;
 import org.jruby.util.IOInputStream;
+import org.jruby.util.ByteList;
 
 import static org.jruby.runtime.Visibility.PRIVATE;
 
@@ -27,14 +24,13 @@ import static org.jruby.runtime.Visibility.PRIVATE;
 public class Unpacker extends RubyObject {
   private IRubyObject stream;
   private IRubyObject data;
+  private Decoder decoder;
   
   public Unpacker(Ruby runtime, RubyClass type) {
     super(runtime, type);
   }
 
   static class UnpackerAllocator implements ObjectAllocator {
-    private MessagePack msgPack;
-      
     public IRubyObject allocate(Ruby runtime, RubyClass klass) {
       return new Unpacker(runtime, klass);
     }
@@ -54,23 +50,17 @@ public class Unpacker extends RubyObject {
   }
 
   @JRubyMethod(name = "execute_limit", required = 3)
-  public IRubyObject executeLimit(ThreadContext ctx, IRubyObject data, IRubyObject offset, IRubyObject limit) {
-    this.data = null;
-    try {
-      int jOffset = RubyNumeric.fix2int(offset);
-      int jLimit = -1;
-      if (limit != null) {
-        jLimit = RubyNumeric.fix2int(limit);
-      }
-      byte[] bytes = data.asString().getBytes();
-      MessagePackBufferUnpacker localBufferUnpacker = new MessagePackBufferUnpacker(msgPack, bytes.length);
-      localBufferUnpacker.wrap(bytes, jOffset, jLimit == -1 ? bytes.length - jOffset : jLimit);
-      this.data = rubyObjectUnpacker.valueToRubyObject(ctx.getRuntime(), localBufferUnpacker.readValue(), options);
-      return ctx.getRuntime().newFixnum(jOffset + localBufferUnpacker.getReadByteCount());
-    } catch (IOException ioe) {
-      // TODO: how to throw Ruby exceptions?
-      return ctx.getRuntime().getNil();
+  public IRubyObject executeLimit(ThreadContext ctx, IRubyObject str, IRubyObject off, IRubyObject lim) {
+    RubyString input = str.asString();
+    int offset = RubyNumeric.fix2int(off);
+    int limit = lim == null || lim.isNil() ? -1 : RubyNumeric.fix2int(lim);
+    ByteList byteList = input.getByteList();
+    if (limit == -1) {
+      limit = byteList.length() - offset;
     }
+    Decoder decoder = new Decoder(ctx.getRuntime(), byteList.unsafeBytes(), byteList.begin() + offset, limit);
+    this.data = decoder.next();
+    return ctx.getRuntime().newFixnum(decoder.offset());
   }
 
   @JRubyMethod(name = "data")
@@ -83,19 +73,18 @@ public class Unpacker extends RubyObject {
   }
 
   @JRubyMethod(name = "finished?")
-  public IRubyObject finished_q(ThreadContext ctx) {
+  public IRubyObject finished_p(ThreadContext ctx) {
     return data == null ? ctx.getRuntime().getFalse() : ctx.getRuntime().getTrue();
   }
 
   @JRubyMethod(required = 1)
   public IRubyObject feed(ThreadContext ctx, IRubyObject data) {
-    streamUnpacker = null;
-    byte[] bytes = data.asString().getBytes();
-    if (bufferUnpacker == null) {
-      bufferUnpacker = new MessagePackBufferUnpacker(msgPack);
-      unpackerIterator = bufferUnpacker.iterator();
+    byte[] bytes = data.asString().getByteList().unsafeBytes();
+    if (decoder == null) {
+      decoder = new Decoder(ctx.getRuntime(), bytes);
+    } else {
+      decoder.feed(bytes);
     }
-    bufferUnpacker.feed(bytes);
     return ctx.getRuntime().getNil();
   }
 
@@ -108,21 +97,13 @@ public class Unpacker extends RubyObject {
   
   @JRubyMethod
   public IRubyObject each(ThreadContext ctx, Block block) {
-    MessagePackUnpacker localUnpacker = null;
-    if (bufferUnpacker == null && streamUnpacker != null) {
-      localUnpacker = streamUnpacker;
-    } else if (bufferUnpacker != null) {
-      localUnpacker = bufferUnpacker;
-    } else {
-      return ctx.getRuntime().getNil();
-    }
     if (block.isGiven()) {
-      while (unpackerIterator.hasNext()) {
-        Value value = unpackerIterator.next();
-        IRubyObject rubyObject = rubyObjectUnpacker.valueToRubyObject(ctx.getRuntime(), value, options);
-        block.yield(ctx, rubyObject);
+      if (decoder != null) {
+        while (decoder.hasNext()) {
+          block.yield(ctx, decoder.next());
+        }
       }
-      return ctx.getRuntime().getNil();
+      return this;
     } else {
       return callMethod(ctx, "to_enum");
     }
@@ -135,11 +116,8 @@ public class Unpacker extends RubyObject {
 
   @JRubyMethod
   public IRubyObject reset(ThreadContext ctx) {
-    if (bufferUnpacker != null) {
-      bufferUnpacker.reset();
-    }
-    if (streamUnpacker != null) {
-      streamUnpacker.reset();
+    if (decoder != null) {
+      decoder.reset();
     }
     return ctx.getRuntime().getNil();
   }
@@ -155,17 +133,15 @@ public class Unpacker extends RubyObject {
 
   @JRubyMethod(name = "stream=", required = 1)
   public IRubyObject setStream(ThreadContext ctx, IRubyObject stream) {
-    bufferUnpacker = null;
+    this.decoder = null;
     this.stream = stream;
     if (stream instanceof RubyStringIO) {
       // TODO: RubyStringIO returns negative numbers when read through IOInputStream#read
-      IRubyObject str = ((RubyStringIO) stream).string();
-      byte[] bytes = ((RubyString) str).getBytes();
-      streamUnpacker = new MessagePackUnpacker(msgPack, new ByteArrayInputStream(bytes));
+      RubyString str = stream.callMethod(ctx, "string").asString();
+      decoder = new Decoder(ctx.getRuntime(), str.getByteList().unsafeBytes());
     } else {
-      streamUnpacker = new MessagePackUnpacker(msgPack, new IOInputStream(stream));
+      // new IOInputStream(stream)
     }
-    unpackerIterator = streamUnpacker.iterator();
     return getStream(ctx);
   }
 }

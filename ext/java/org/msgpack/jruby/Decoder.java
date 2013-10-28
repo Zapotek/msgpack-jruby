@@ -3,6 +3,7 @@ package org.msgpack.jruby;
 
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.util.Iterator;
 
 import org.jruby.Ruby;
 import org.jruby.RubyObject;
@@ -18,19 +19,47 @@ import org.jcodings.specific.UTF8Encoding;
 import static org.msgpack.jruby.Types.*;
 
 
-public class Decoder {
+public class Decoder implements Iterator<IRubyObject> {
   private final Ruby runtime;
-  private final ByteBuffer buffer;
   private final Encoding binaryEncoding;
   private final Encoding utf8Encoding;
   private final RubyClass unpackErrorClass;
 
-  public Decoder(Ruby runtime, byte[] buffer) {
+  private ByteBuffer buffer;
+
+  public Decoder(Ruby runtime, byte[] bytes) {
+    this(runtime, bytes, 0, bytes.length);
+  }
+
+  public Decoder(Ruby runtime, byte[] bytes, int offset, int length) {
     this.runtime = runtime;
-    this.buffer = ByteBuffer.wrap(buffer);
     this.binaryEncoding = runtime.getEncodingService().getAscii8bitEncoding();
     this.utf8Encoding = UTF8Encoding.INSTANCE;
     this.unpackErrorClass = runtime.getModule("MessagePack").getClass("UnpackError");
+    feed(bytes, offset, length);
+  }
+
+  public void feed(byte[] bytes) {
+    feed(bytes, 0, bytes.length);
+  }
+
+  public void feed(byte[] bytes, int offset, int length) {
+    if (buffer == null) {
+      buffer = ByteBuffer.wrap(bytes, offset, length);
+    } else {
+      ByteBuffer newBuffer = ByteBuffer.allocate(buffer.remaining() + length);
+      newBuffer.put(buffer);
+      newBuffer.put(bytes, offset, length);
+      buffer = newBuffer;
+    }
+  }
+
+  public void reset() {
+    buffer.rewind();
+  }
+
+  public int offset() {
+    return buffer.position();
   }
 
   private IRubyObject consumeUnsignedLong() {
@@ -72,6 +101,17 @@ public class Decoder {
     return ExtensionValue.newExtensionValue(runtime, type, payload);
   }
 
+  @Override
+  public void remove() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public boolean hasNext() {
+    return buffer.remaining() > 0;
+  }
+
+  @Override
   public IRubyObject next() {
     byte b = buffer.get();
 outer:
